@@ -1,9 +1,12 @@
-import tornado.ioloop
-import tornado.web
+import tornado
 import logging
+import pprint
 import json
-import uuid
 import os
+
+from queue import Queue
+from tornado import websocket, web, ioloop
+from concurrent.futures import ThreadPoolExecutor
 
 root = os.path.dirname(os.path.realpath(__file__))
 logger = logging.getLogger()
@@ -14,45 +17,61 @@ formatter = logging.Formatter("[%(levelname)s] %(message)s")
 ch.setFormatter(formatter)
 logger.addHandler(ch)
 
-class DB:
-  sdps = {}
+executor = ThreadPoolExecutor(4)
 
-class PeersHandler(tornado.web.RequestHandler):
-  def get(self, _id):
-    peers = {key: value for key, value in DB.sdps.items() if key != _id}
-    response = json.dumps(peers)
-    self.write(response)
+queue = Queue()
 
-class ICEsHandler(tornado.web.RequestHandler):
-  def post(self):
-    _id = str(uuid.uuid1())
-    data = json.loads(self.request.body)
-    DB.sdps[_id] = data
-    response = {
-      'id': _id,
-      'data': data
-    }
-    logger.debug("Created record for Sdp(%s)." % response['id'])
-    self.write(json.dumps(response))
-    logger.debug("Sent Response(%s)." % response)
+class SocketHandler(websocket.WebSocketHandler):
+  wss = set()
 
-class ICEHandler(tornado.web.RequestHandler):
-  def get(self):
-    import pdb; pdb.set_trace()
+  def check_origin(self, origin):
+    return True
 
-  def post(self):
-    import pdb; pdb.set_trace()
+  @classmethod
+  def send_message(cls, _self, message):
+    for ws in cls.wss:
+      if ws == _self:
+        continue
+      logger.debug("writing message to Handler(%s)" % hex(id(ws)))
+      ws.write_message(message)
 
+  def send_queue(self, ws):
+    while not queue.empty():
+      logger.debug("sending queued messages.")
+      ws.write_message(queue.get())
 
-application = tornado.web.Application([
-  (r"/ices\/*", ICEsHandler),
-  (r"/peers\/(.*)", PeersHandler),
-  (r"/ice/(.*)", ICEHandler),
-  (r"/(.*)", tornado.web.StaticFileHandler, {"path": root, "default_filename": "index.html"})
+  def open(self):
+    logger.debug("open.")
+    self.wss.add(self)
+
+    message = { 'command': 'set-context', 'context': 'target' }
+    if len(list(self.wss)) == 1:
+      message['context'] = 'initiator'
+    self.write_message(json.dumps(message))
+
+    tornado.ioloop.IOLoop.current().add_callback(self.send_queue, self)
+
+  def on_message(self, message):
+    logger.debug("on_message")
+    message = json.loads(message)
+    if len(list(enumerate(self.wss))) == 1:
+      logger.debug("received on_message; queueing message for new clients.")
+      logger.debug("   %s" % pprint.pformat(message))
+      queue.put(message)
+      return
+    SocketHandler.send_message(self, message)
+
+  def on_close(self):
+    logger.debug("on_close.")
+    SocketHandler.wss = set([ws for ws in SocketHandler.wss if ws != self])
+    logger.debug("  removed %s" % hex(id(self)))
+
+app = web.Application([
+  (r'/ws', SocketHandler),
+  (r"/(.*)", tornado.web.StaticFileHandler, \
+    {"path": root, "default_filename": "index.html"})
 ])
 
-if __name__ == "__main__":
-  PORT = 8888
-  application.listen(PORT)
-  print("Starting up on 0.0.0.0:%s" % PORT)
-  tornado.ioloop.IOLoop.instance().start()
+if __name__ == '__main__':
+  app.listen(8888)
+ioloop.IOLoop.instance().start()

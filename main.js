@@ -1,149 +1,181 @@
-'use strict';
+var host = window.location.host;
+var url = `ws:\/\/${host}/ws`;
+console.log(`Opening WS(${url}).`);
+var ws = new WebSocket(url);
 
-let local;
-let remote;
-let tx;
-let rx;
+function onopen() {
+  console.log("datachannel onopen.");
+  data.data['open'] = true;
+};
+function onclose() { console.log("[datachannel] onclose."); };
+function ondatachannel() { console.log("[datachannel] ondatachannel"); };
+function onmessage(e) { console.log("[datachannel] onmessage"); }
+function onicecandidate(e) { console.log(`onicecandidate ${e}.`); };
 
-function stateChange() {
-  console.log("stateChange()");
+var peer = {};
+var dataChannel = {};
+
+const handler = {
+  set(target, key, value) {
+    //console.log(`Setting key(${key}) to value(${value})`);
+    if (key == 'open') {
+      data.onready()
+    }
+    target[key] = value;
+  }
+}
+var data = {
+  'open': false
+};
+data.data = new Proxy(data, handler);
+data.onready = function() {
+  debugger;
+};
+
+const handleOffer = function(offer) {
+  console.log("handleOffer");
+  console.log("creating answer sdp.");
+  if (context.context == 'target') {
+    console.log("creating a peer connection.");
+    peer = new RTCPeerConnection();
+    peer.onicecandidate = function(e) {
+      if (!e.candidate) {
+        return;
+      }
+      let data = {
+        'type': 'icecandidate',
+        'candidate': e.candidate
+      }
+      ws.send(JSON.stringify(data));
+    };
+    console.log("creating data channel.");
+    dataChannel = peer.createDataChannel("data");
+    console.log("assigning callbacks.");
+    dataChannel.onmessage = onmessage;
+    dataChannel.onopen = onopen;
+    peer.ondatachannel = ondatachannel;
+    console.log("setting local description to peer offer.");
+    peer.setRemoteDescription(offer);
+    console.log("creating an answer.");
+    peer.createAnswer()
+    .then(function(answer) {
+      console.log("setting local description to answer.")
+      peer.setLocalDescription(answer);
+      return answer;
+    })
+    .then(function(answer) {
+      console.log("sending answer.");
+      console.log(answer);
+      answer = JSON.stringify(answer);
+      ws.send(answer);
+      console.log("answer sent.");
+    })
+    .catch(function(e) {
+      console.log("exception handling offer.");
+      console.log(e);
+    });
+  } else {
+    debugger;
+  }
+
 }
 
-function txOfferDescriptionSuccess(record) {
-  console.log(record);
-  record = JSON.parse(record);
-  var id = record.id;
-  var url = `http://localhost:8888/peers/${id}`;
-  $.ajax({
-    type: 'GET',
-    url: url,
-    success: function(data) {
-      console.log("txGetIces: Success!!!");
-      console.log(data);
-    },
-    async: false
+const handleAnswer = function(answer) {
+  console.log("handleAnswer");
+  peer.setRemoteDescription(answer)
+  .catch(e => console.log("error handline answer."));
+}
+
+const handleIceCandidate = function(data) {
+  console.log("adding peer ice candidate.");
+  peer.addIceCandidate(data.candidate);
+}
+
+const handleAddCandidateError = function(e) {
+  console.log("ERROR adding ice candidate.");
+  console.log(e);
+}
+
+const initiatePeerConnection = function() {
+  console.log('initiating peer connection');
+  peer = new RTCPeerConnection();
+  peer.onicecandidate = function(e) {
+    if (!e.candidate) {
+      return;
+    }
+    let data = {
+      'type': 'icecandidate',
+      'candidate': e.candidate
+    }
+    ws.send(JSON.stringify(data));
+  };
+  console.log("creating data channel.");
+  dataChannel = peer.createDataChannel("data");
+  console.log("assigning callbacks.");
+  dataChannel.onmessage = onmessage;
+  dataChannel.onopen = onopen;
+  peer.ondatachannel = ondatachannel;
+  peer.createOffer()
+  .then(function(offer) {
+    console.log("setting description.");
+    peer.setLocalDescription(offer);
+    console.log("sending offer.");
+    offer = JSON.stringify(offer);
+    ws.send(offer);
+    console.log("sent offer.");
+  })
+  .catch(function(e) {
+    console.log("exception creating offer.");
   });
 }
 
-function txOfferDescription(data) {
-  local.setLocalDescription(data);
-  console.log(`txOfferDescription setting local description(${data}) ...`);
+var context = { 'context' : 'target' }
+const handleCommand = function(data) {
+  if (data.command == 'set-context') {
+    context.context = data.context;
+  }
 
-  /*
-  var request = new XMLHttpRequest();
-  request.open("POST", "http://localhost:8888/ices");
-  request.setRequestHeader("Content-Type", "application/json;charset=UTF-8");
-  request.send(JSON.stringify(sdp), true);
-  console.log('response');
-  console.log(request.response);
-  */
-  var url = "http://localhost:8888/ices";
-  $.post(url, JSON.stringify(data), txOfferDescriptionSuccess);
+  if (context.context == 'initiator') {
+    console.log('context is initiator.');
+    initiatePeerConnection();
+  }
 
-  // Probably done via signalling
-  //remote.setRemoteDescription(desc);
-  //console.log(`txOfferDescription setting remote description(${desc}) ...`);
-  //remote.createAnswer().then(
-  //  rxOfferDescription,
-  //  rxOfferDescriptionError
-  //);
-  //console.log(`txOfferDescription remote create answer ...`);
-}
-
-function rxOfferDescription(desc) {
-  remote.setLocalDescription(desc);
-  console.log(`rxOfferDescription setting local description(${desc}) ...`);
-
-  // Probably done via signalling
-  local.setRemoteDescription(desc);
-  console.log(`rxOfferDescriptions setting remote description(${desc}) ...`);
-}
-
-function txOfferDescriptionError(error) {
-  console.log(error);
-}
-
-function rxOfferDescriptionError(error) {
-  console.log(error);
-}
-
-var utils = {
-  getotherpc: function(pc){
-    if (pc === local) {
-      return remote;
-    }
-    return local;
-  },
-  getname: function(pc) {
-    if (pc === local) {
-      return 'local';
-    }
-    return 'remote';
+  if (context.context == 'target') {
+    console.log('context is target.');
   }
 }
 
-function onaddicecandidatesuccess(pc) {
-  console.log('onaddicecandidatesuccess! :)');
-}
+ws.onmessage = function(ev) {
+  var data = JSON.parse(ev.data);
 
-function onaddicecandidateerror(pc, err) {
-  console.log('onaddicecandidatefailure. :(');
-}
-
-function onicecandidate(pc, event) {
-  console.log('onicecandidate ...');
-  if (typeof(utils) === 'undefined') {
-    debugger;
+  // Enter command mode.
+  if (data.hasOwnProperty('command')) {
+    handleCommand(data);
+    return;
   }
-  //utils.getotherpc(pc)
-  //  .addIceCandidate(event.candidate)
-  //  .then(
-  //    () => onaddicecandidatesuccess(pc),
-  //    err => onaddicecandidatefailure(pc, err)
-  //  );
-  console.log(`${utils.getname(pc)} ICE candidate: ${event.candidate ? event.candidate.candidate : '(null)'}`);
-}
 
-const servers = null;
+  // Otherwise we are processing an SDP.
+  var sdp = data;
+  if (sdp.type == "offer") {
+    console.log("offer received.");
+    handleOffer(sdp);
+    return;
+  }
 
-function localOnOpen() {
-  console.log('local onopen ...');
-}
+  if (sdp.type == "answer") {
+    console.log("answer received.");
+    handleAnswer(sdp);
+    return;
+  }
 
-function localOnClose() {
-  console.log('local onclose ...');
-}
-
-
-function createTxConnection() {
-  console.log("createTxConnection");
-  local = new RTCPeerConnection(servers);
-  tx = local.createDataChannel('tx');
-  console.log(`created transmit channel(${tx}) ...`);
-
-  local.onicecandidate = function(e) {
-    console.log(e);
-    console.log('local onicecandidate ...');
-    onicecandidate(local, e);
+  if (sdp.type == 'icecandidate') {
+    handleIceCandidate(sdp);
   };
+};
 
-  local.onopen = localOnOpen;
-  local.onclose = localOnClose;
 
-  local.createOffer().then(
-    txOfferDescription,
-    txOfferDescriptionError
-  );
+ws.onopen = function() {
+  console.log('websocket open.');
 }
 
-function createRxConnection() {
-  console.log("createRxConnection");
-  var remote = new RTCPeerConnection(servers);
-  var rx = remote.createDataChannel('rx');
-  console.log(`created receive channel(${rx}) ...`);
-
-}
-
-//createRxConnection();
-createTxConnection();
 
