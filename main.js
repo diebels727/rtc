@@ -5,12 +5,22 @@ var ws = new WebSocket(url);
 
 function onopen() {
   console.log("datachannel onopen.");
-  data.data['open'] = true;
+  data.data['onopen'] = true;
 };
-function onclose() { console.log("[datachannel] onclose."); };
-function ondatachannel() { console.log("[datachannel] ondatachannel"); };
-function onmessage(e) { console.log("[datachannel] onmessage"); }
-function onicecandidate(e) { console.log(`onicecandidate ${e}.`); };
+function onclose() {
+  console.log("[datachannel] onclose.");
+};
+function onmessage(e) {
+  console.log("[datachannel] onmessage");
+};
+function ondatachannel(ev) {
+  console.log("[datachannel] ondatachannel");
+  ev.channel.onmessage = onmessage;
+};
+
+function onicecandidate(e) {
+  console.log(`onicecandidate ${e}.`);
+};
 
 var peer = {};
 var dataChannel = {};
@@ -25,10 +35,10 @@ const handler = {
   }
 }
 var data = {
-  'open': false
+  'onopen': false
 };
 data.data = new Proxy(data, handler);
-data.onready = function() {
+data.onopen = function() {
   debugger;
 };
 
